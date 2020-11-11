@@ -3456,13 +3456,6 @@ var InfoSchemaQueries = []QueryTest{
 		},
 	},
 	{
-		Query: `DESCRIBE auto_increment_tbl`,
-		Expected: []sql.Row{
-			{"pk", "bigint", "NO", "PRI", "", "auto_increment"},
-			{"c0", "bigint", "YES", "", "", ""},
-		},
-	},
-	{
 		Query: `SHOW COLUMNS FROM mytable WHERE Field = 'i'`,
 		Expected: []sql.Row{
 			{"i", "bigint", "NO", "PRI", "", ""},
@@ -3672,23 +3665,6 @@ var InfoSchemaQueries = []QueryTest{
 			{"niltable", nil},
 			{"othertable", nil},
 			{"tabletest", nil},
-		},
-	},
-}
-
-var InfoSchemaScripts = []ScriptTest{
-	{
-		Name: "describe auto_increment table",
-		SetUpScript: []string{
-			"create table auto (pk int primary key auto_increment)",
-		},
-		Assertions: []ScriptTestAssertion{
-			{
-				Query: "describe auto;",
-				Expected: []sql.Row{
-					{"pk", "int", "NO", "PRI", "", "auto_increment"},
-				},
-			},
 		},
 	},
 }
