@@ -47,6 +47,11 @@ type conntainer struct {
 	NetConn   net.Conn
 }
 
+type clientData struct {
+	// result cache for PreparedStatements
+	cache       map[uint32][]*sqltypes.Result
+}
+
 // Handler is a connection handler for a SQLe engine.
 type Handler struct {
 	mu          sync.Mutex
@@ -55,9 +60,6 @@ type Handler struct {
 	c           map[uint32]conntainer
 	readTimeout time.Duration
 	lc          []*net.Conn
-
-	// result cache for write PreparedStatements
-	cache       map[uint32][]*sqltypes.Result
 }
 
 // NewHandler creates a new Handler given a SQLe engine.
@@ -67,7 +69,6 @@ func NewHandler(e *sqle.Engine, sm *SessionManager, rt time.Duration) *Handler {
 		sm:          sm,
 		c:           make(map[uint32]conntainer),
 		readTimeout: rt,
-		cache:       make(map[uint32][]*sqltypes.Result),
 	}
 }
 
@@ -93,6 +94,10 @@ func (h *Handler) NewConnection(c *mysql.Conn) {
 				"connection checker won't run")
 		}
 		h.c[c.ConnectionID] = conntainer{c, netConn}
+	}
+
+	c.ClientData = clientData{
+		cache: make(map[uint32][]*sqltypes.Result),
 	}
 
 	h.mu.Unlock()
@@ -128,7 +133,7 @@ func (h *Handler) ComStmtExecute(c *mysql.Conn, prepare *mysql.PrepareData, call
 	parsedQuery, parseErr := parse(prepare.PrepareStmt)
 
 	if statementNeedsCaching(parsedQuery, parseErr) {
-		callback = h.wrapCallback(prepare, callback)
+		callback = wrapCallback(c, prepare, callback)
 	}
 
 	return h.doQuery(c, prepare.PrepareStmt, parsedQuery, parseErr, prepare.BindVars, callback)
@@ -144,7 +149,7 @@ func (h *Handler) ComStmtFetch(c *mysql.Conn, prepare *mysql.PrepareData, callba
 		return h.doQuery(c, prepare.PrepareStmt, parsedQuery, parseErr, prepare.BindVars, callback)
 	}
 
-	cached, ok := h.cache[prepare.StatementID]
+	cached, ok := c.ClientData.(clientData).cache[prepare.StatementID]
 	if !ok {
 		return ErrStatmentNotExecuted.New(prepare.StatementID)
 	}
@@ -159,9 +164,10 @@ func (h *Handler) ComStmtFetch(c *mysql.Conn, prepare *mysql.PrepareData, callba
 }
 
 
-func (h *Handler) wrapCallback(prepare *mysql.PrepareData, callback func(*sqltypes.Result) error) func(*sqltypes.Result) error {
+func wrapCallback(c *mysql.Conn, prepare *mysql.PrepareData, callback func(*sqltypes.Result) error) func(*sqltypes.Result) error {
 	return func(res *sqltypes.Result) error {
-		h.cache[prepare.StatementID] = append(h.cache[prepare.StatementID], res)
+		id := prepare.StatementID
+		c.ClientData.(clientData).cache[id] = append(c.ClientData.(clientData).cache[id], res)
 		return callback(res)
 	}
 }
