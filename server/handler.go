@@ -36,6 +36,8 @@ var ErrConnectionWasClosed = errors.NewKind("connection was closed")
 
 var ErrUnsupportedOperation = errors.NewKind("unsupported operation")
 
+var ErrStatmentNotExecuted = errors.NewKind("statement id %d has not been executed and cannot be fetched")
+
 // TODO parametrize
 const rowsBatch = 100
 const tcpCheckerSleepTime = 1
@@ -53,6 +55,9 @@ type Handler struct {
 	c           map[uint32]conntainer
 	readTimeout time.Duration
 	lc          []*net.Conn
+
+	// result cache for write PreparedStatements
+	cache       map[uint32][]*sqltypes.Result
 }
 
 // NewHandler creates a new Handler given a SQLe engine.
@@ -62,6 +67,7 @@ func NewHandler(e *sqle.Engine, sm *SessionManager, rt time.Duration) *Handler {
 		sm:          sm,
 		c:           make(map[uint32]conntainer),
 		readTimeout: rt,
+		cache:       make(map[uint32][]*sqltypes.Result),
 	}
 }
 
@@ -110,8 +116,54 @@ func (h *Handler) ComPrepare(c *mysql.Conn, query string) ([]*query.Field, error
 	return schemaToFields(schema), nil
 }
 
+func parse(query string) (sqlparser.Statement, error) {
+	// Parse the query independently of the engine for further analysis. The parser has its own parsing logic for
+	// statements not handled by vitess's parser, so even if there's a parse error here we still pass it to the engine
+	// for execution.
+	// TODO: unify parser logic so we don't have to parse twice
+	return sqlparser.Parse(query)
+}
+
 func (h *Handler) ComStmtExecute(c *mysql.Conn, prepare *mysql.PrepareData, callback func(*sqltypes.Result) error) error {
-	return h.doQuery(c, prepare.PrepareStmt, prepare.BindVars, callback)
+	parsedQuery, parseErr := parse(prepare.PrepareStmt)
+
+	if statementNeedsCaching(parsedQuery, parseErr) {
+		callback = h.wrapCallback(prepare, callback)
+	}
+
+	return h.doQuery(c, prepare.PrepareStmt, parsedQuery, parseErr, prepare.BindVars, callback)
+}
+
+// ComStmtFetch is called when a connection receives a statement
+// fetch query.
+func (h *Handler) ComStmtFetch(c *mysql.Conn, prepare *mysql.PrepareData, callback func(*sqltypes.Result) error) error {
+	parsedQuery, parseErr := parse(prepare.PrepareStmt)
+
+	if !statementNeedsCaching(parsedQuery, parseErr) {
+		// only write queries are cached
+		return h.doQuery(c, prepare.PrepareStmt, parsedQuery, parseErr, prepare.BindVars, callback)
+	}
+
+	cached, ok := h.cache[prepare.StatementID]
+	if !ok {
+		return ErrStatmentNotExecuted.New(prepare.StatementID)
+	}
+
+	for _, res := range cached {
+		if err := callback(res); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+
+func (h *Handler) wrapCallback(prepare *mysql.PrepareData, callback func(*sqltypes.Result) error) func(*sqltypes.Result) error {
+	return func(res *sqltypes.Result) error {
+		h.cache[prepare.StatementID] = append(h.cache[prepare.StatementID], res)
+		return callback(res)
+	}
 }
 
 func (h *Handler) ComResetConnection(c *mysql.Conn) {
@@ -142,7 +194,8 @@ func (h *Handler) ComQuery(
 	query string,
 	callback func(*sqltypes.Result) error,
 ) error {
-	return h.doQuery(c, query, nil, callback)
+	parsedQuery, parseErr := parse(query)
+	return h.doQuery(c, query, parsedQuery, parseErr, nil, callback)
 }
 
 func bindingsToExprs(bindings map[string]*query.BindVariable) (map[string]sql.Expression, error) {
@@ -255,6 +308,8 @@ func bindingsToExprs(bindings map[string]*query.BindVariable) (map[string]sql.Ex
 func (h *Handler) doQuery(
 	c *mysql.Conn,
 	query string,
+	parsedQuery sqlparser.Statement,
+	parseErr error,
 	bindings map[string]*query.BindVariable,
 	callback func(*sqltypes.Result) error,
 ) error {
@@ -284,11 +339,6 @@ func (h *Handler) doQuery(
 
 	start := time.Now()
 
-	// Parse the query independently of the engine for further analysis. The parser has its own parsing logic for
-	// statements not handled by vitess's parser, so even if there's a parse error here we still pass it to the engine
-	// for execution.
-	// TODO: unify parser logic so we don't have to parse twice
-	parsedQuery, parseErr := sqlparser.Parse(query)
 	var schema sql.Schema
 	var rows sql.RowIter
 	if len(bindings) == 0 {
@@ -512,6 +562,16 @@ func statementNeedsCommit(parsedQuery sqlparser.Statement, parseErr error) bool 
 		}
 	}
 
+	return false
+}
+
+func statementNeedsCaching(parsedQuery sqlparser.Statement, parseErr error) bool {
+	if parseErr == nil {
+		switch parsedQuery.(type) {
+		case *sqlparser.DDL, *sqlparser.Commit, *sqlparser.Update, *sqlparser.Insert, *sqlparser.Delete:
+			return true
+		}
+	}
 	return false
 }
 
