@@ -429,10 +429,13 @@ rowLoop:
 
 	_, statementIsCommit := parsedQuery.(*sqlparser.Commit)
 	if statementIsCommit || (autoCommit && statementNeedsCommit(parsedQuery, parseErr)) {
+		logrus.Tracef("session.CommitTransaction for client: %v", c.ConnectionID)
 		if err := ctx.Session.CommitTransaction(ctx); err != nil {
 			return err
 		}
 	}
+
+	logrus.Tracef("preparing callback for client: %v", c.ConnectionID)
 
 	// Even if r.RowsAffected = 0, the callback must be
 	// called to update the state in the go-vitess' listener
@@ -442,6 +445,7 @@ rowLoop:
 		return nil
 	}
 
+	logrus.Tracef("callback for client: %v", c.ConnectionID)
 	return callback(r)
 }
 
