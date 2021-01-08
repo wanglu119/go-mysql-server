@@ -95,10 +95,13 @@ func (h *Handler) NewConnection(c *mysql.Conn) {
 }
 
 func (h *Handler) ComInitDB(c *mysql.Conn, schemaName string) error {
+	logrus.Tracef("InitDB to %s: client %v", schemaName, c.ConnectionID)
 	return h.sm.SetDB(c, schemaName)
 }
 
 func (h *Handler) ComPrepare(c *mysql.Conn, query string) ([]*query.Field, error) {
+	logrus.Tracef("Prepare %s: client %v", query, c.ConnectionID)
+
 	ctx, err := h.sm.NewContextWithQuery(c, query)
 	if err != nil {
 		return nil, err
@@ -115,6 +118,7 @@ func (h *Handler) ComStmtExecute(c *mysql.Conn, prepare *mysql.PrepareData, call
 }
 
 func (h *Handler) ComResetConnection(c *mysql.Conn) {
+	logrus.Tracef("ResetConnection: client %v", c.ConnectionID)
 	// TODO: handle reset logic
 }
 
