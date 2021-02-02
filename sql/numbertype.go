@@ -50,6 +50,15 @@ var (
 	Float32 = MustCreateNumberType(sqltypes.Float32)
 	// Float64 is a floating point number of 64 bits.
 	Float64 = MustCreateNumberType(sqltypes.Float64)
+
+	// decimal that represents the max value an uint64 can hold
+	dec_uint64_max = decimal.NewFromInt(9223372036854775807).Mul(decimal.NewFromInt(2).Add(decimal.NewFromInt(1)))
+	// decimal that represents the max value an int64 can hold
+	dec_int64_max = decimal.NewFromInt(9223372036854775807)
+	// decimal that represents the min value an int64 can hold
+	dec_int64_min = decimal.NewFromInt(-9223372036854775808)
+	// decimal that represents the zero value
+	dec_zero = decimal.NewFromInt(0)
 )
 
 // Represents all integer and floating point types.
@@ -244,6 +253,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 			}
 		}
 		if dec, ok := v.(decimal.Decimal); ok {
+			if dec.GreaterThan(dec_int64_max) || dec.LessThan(dec_int64_min) {
+				return nil, ErrOutOfRange.New(dec.String(), t)
+			}
 			return dec.IntPart(), nil
 		}
 		num, err := cast.ToInt64E(v)
@@ -253,6 +265,9 @@ func (t numberTypeImpl) Convert(v interface{}) (interface{}, error) {
 		return num, err
 	case sqltypes.Uint64:
 		if dec, ok := v.(decimal.Decimal); ok {
+			if dec.GreaterThan(dec_uint64_max) || dec.LessThan(dec_zero) {
+				return nil, ErrOutOfRange.New(dec.String(), t)
+			}
 			v = dec.IntPart()
 		}
 		num, err := cast.ToUint64E(v)
